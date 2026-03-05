@@ -17,6 +17,9 @@ use std::str::FromStr;
 #[cfg(feature = "aws")]
 use polars::prelude::cloud::AmazonS3ConfigKey as S3Key;
 
+#[cfg(feature = "gcp")]
+use polars::prelude::cloud::GoogleConfigKey as GCSKey;
+
 use chrono_tz::{OffsetComponents, OffsetName, Tz};
 
 pub use polars_arrow::datatypes::TimeUnit as ArrowTimeUnit;
@@ -884,6 +887,59 @@ impl ExS3Config {
         }
 
         CloudOptions::default().with_aws(aws_opts)
+    }
+}
+
+// =========================
+// ====== GCS Entry ======
+// =========================
+
+#[derive(NifStruct, Clone, Debug)]
+#[module = "Explorer.FSS.GCSConfig"]
+pub struct ExGCSConfig {
+    pub bucket: String,
+    pub credentials: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExGCSEntry {
+    pub key: String,
+    pub config: ExGCSConfig,
+}
+
+impl<'a> rustler::Decoder<'a> for ExGCSEntry {
+    fn decode(term: rustler::Term<'a>) -> rustler::NifResult<Self> {
+        use rustler::*;
+
+        let tuple: (Atom, String, ExGCSConfig) = term.decode()?;
+
+        if tuple.0 != atoms::gcs() {
+            return Err(rustler::Error::BadArg);
+        }
+
+        Ok(ExGCSEntry {
+            key: tuple.1,
+            config: tuple.2,
+        })
+    }
+}
+
+impl fmt::Display for ExGCSEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "gs://{}/{}", self.config.bucket, self.key)
+    }
+}
+
+#[cfg(feature = "gcp")]
+impl ExGCSConfig {
+    pub fn to_cloud_options(&self) -> CloudOptions {
+        let mut gcs_opts: Vec<(GCSKey, &String)> = vec![];
+
+        if let Some(credentials) = &self.credentials {
+            gcs_opts.push((GCSKey::ServiceAccountKey, credentials));
+        }
+
+        CloudOptions::default().with_gcp(gcs_opts)
     }
 }
 

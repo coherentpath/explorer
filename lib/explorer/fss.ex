@@ -27,6 +27,88 @@ defmodule Explorer.FSS do
           }
   end
 
+  defmodule GCSConfig do
+    @moduledoc false
+    @derive {Inspect, only: [:bucket]}
+    defstruct [
+      :bucket,
+      :credentials
+    ]
+
+    @type t :: %__MODULE__{
+            bucket: String.t(),
+            credentials: String.t() | nil
+          }
+  end
+
+  @doc """
+  Parses a GCS URL in the format `gs://bucket/key` and returns a triplet.
+
+  ## Options
+
+    * `:config` - A map/keyword list with GCS configuration keys, or `nil` to use
+      Application Default Credentials (ADC). ADC works automatically with GKE
+      Workload Identity, `GOOGLE_APPLICATION_CREDENTIALS` env var, or `gcloud` CLI auth.
+      - `:credentials` - Optional path to service account JSON key file or JSON string.
+        When nil, uses ADC.
+
+  ## Returns
+
+  `{:ok, {:gcs, key, %GCSConfig{}}}` where config is a struct with:
+    - `:bucket` - The GCS bucket name
+    - `:credentials` - Optional service account key (nil for ADC/Workload Identity)
+  """
+  @spec parse_gcs(String.t(), Keyword.t()) ::
+          {:ok, {:gcs, String.t(), GCSConfig.t()}} | {:error, Exception.t()}
+  def parse_gcs(url, opts \\ []) do
+    opts = Keyword.validate!(opts, config: nil)
+
+    uri = URI.parse(url)
+
+    case uri do
+      %{scheme: "gs", host: bucket, path: "/" <> key} when is_binary(bucket) and bucket != "" ->
+        config = normalize_gcs_config!(opts |> Keyword.fetch!(:config))
+        config = %{config | bucket: bucket}
+        {:ok, {:gcs, key, config}}
+
+      _ ->
+        {:error,
+         ArgumentError.exception("expected gs://<bucket>/<key> URL, got: " <> URI.to_string(uri))}
+    end
+  end
+
+  defp normalize_gcs_config!(nil), do: gcs_config_from_env()
+  defp normalize_gcs_config!(%GCSConfig{} = config), do: config
+
+  defp normalize_gcs_config!(config) when is_map(config) do
+    struct!(gcs_config_from_env(), config)
+  end
+
+  defp normalize_gcs_config!(config) when is_list(config) do
+    struct!(gcs_config_from_env(), config)
+  end
+
+  defp normalize_gcs_config!(other) do
+    raise ArgumentError,
+          "expect GCS configuration to be a map or keyword list. Instead got #{inspect(other)}"
+  end
+
+  defp gcs_config_from_env do
+    credentials = System.get_env("GOOGLE_APPLICATION_CREDENTIALS")
+
+    credentials =
+      if credentials && File.exists?(credentials) do
+        File.read!(credentials)
+      else
+        credentials
+      end
+
+    %GCSConfig{
+      bucket: nil,
+      credentials: credentials
+    }
+  end
+
   @doc """
   Parses an S3 URL in the format `s3://bucket/key` and returns a triplet.
 
@@ -245,6 +327,24 @@ defmodule Explorer.FSS do
     end
   end
 
+  def download({:gcs, key, config}, path) do
+    with :ok <- assert_regular_path(path) do
+      bucket = Map.fetch!(config, :bucket)
+
+      url =
+        "https://storage.googleapis.com/storage/v1/b/#{URI.encode(bucket)}/o/#{URI.encode(key, &(&1 != ?/))}?alt=media"
+
+      headers = build_gcs_headers(config)
+      collectable = File.stream!(path)
+
+      case download_url(url, collectable, headers: headers) do
+        {:ok, _collectable} -> :ok
+        {:error, _message, 404} -> {:error, ArgumentError.exception("resource not found (404)")}
+        {:error, exception, _status} -> {:error, exception}
+      end
+    end
+  end
+
   def download({:http, url, config}, path) do
     with :ok <- assert_regular_path(path) do
       headers = Map.get(config, :headers, [])
@@ -435,6 +535,58 @@ defmodule Explorer.FSS do
       end
 
     {:ok, updated_uri}
+  end
+
+  defp build_gcs_headers(config) do
+    case Map.get(config, :credentials) do
+      nil ->
+        case gcs_access_token() do
+          {:ok, token} -> [{"Authorization", "Bearer " <> token}]
+          :error -> []
+        end
+
+      _credentials ->
+        []
+    end
+  end
+
+  defp gcs_access_token do
+    with :error <- gcs_metadata_token(),
+         :error <- gcloud_access_token() do
+      :error
+    end
+  end
+
+  defp gcs_metadata_token do
+    url =
+      ~c"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+
+    headers = [{~c"metadata-flavor", ~c"Google"}]
+    http_opts = [timeout: 2000]
+
+    case :httpc.request(:get, {url, headers}, http_opts, []) do
+      {:ok, {{_, 200, _}, _, body}} ->
+        body_str = to_string(body)
+
+        case Regex.run(~r/"access_token"\s*:\s*"([^"]+)"/, body_str) do
+          [_, token] -> {:ok, token}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp gcloud_access_token do
+    case System.cmd("gcloud", ["auth", "print-access-token"], stderr_to_stdout: true) do
+      {token, 0} -> {:ok, String.trim(token)}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
   end
 
   defp build_s3_headers(config, method, url, headers, body \\ nil) do

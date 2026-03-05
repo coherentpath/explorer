@@ -65,6 +65,7 @@ mod atoms {
         exp,
         sign,
         s3,
+        gcs,
     }
 }
 

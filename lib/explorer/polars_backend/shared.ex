@@ -286,6 +286,20 @@ defmodule Explorer.PolarsBackend.Shared do
     build_tmp_path(id)
   end
 
+  def build_path_for_entry({:gcs, key, config}) do
+    bucket = Map.fetch!(config, :bucket)
+
+    hash =
+      :crypto.hash(:sha256, bucket <> "/" <> key)
+      |> Base.url_encode64(padding: false)
+
+    rand = Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)
+
+    id = "gcs-file-#{hash}-#{rand}"
+
+    build_tmp_path(id)
+  end
+
   def build_path_for_entry({:http, url, _config}) do
     hash = :crypto.hash(:sha256, url) |> Base.url_encode64(padding: false)
     rand = Base.url_encode64(:crypto.strong_rand_bytes(8), padding: false)

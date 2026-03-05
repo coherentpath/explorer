@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Write};
 use std::sync::Arc;
 
-use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExSeriesDtype};
+use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExGCSEntry, ExSeriesDtype};
 use crate::{ExDataFrame, ExplorerError};
 
 #[cfg(feature = "cloud")]
@@ -282,7 +282,7 @@ pub fn df_to_parquet_cloud(
     Ok(())
 }
 
-#[cfg(feature = "aws")]
+#[cfg(any(feature = "aws", feature = "gcp"))]
 fn object_store_to_explorer_error(error: impl std::fmt::Debug) -> ExplorerError {
     ExplorerError::Other(format!("Internal ObjectStore error: #{error:?}"))
 }
@@ -882,5 +882,180 @@ pub fn df_to_ipc_stream_cloud(
 pub fn df_to_ndjson_cloud(_data: ExDataFrame, _ex_entry: ExS3Entry) -> Result<(), ExplorerError> {
     Err(ExplorerError::Other("Explorer was compiled without the \"aws\" and \"ndjson\" features enabled. \
         This is mostly due to these feature being incompatible with your computer's architecture. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+// ============ GCS Cloud ============ //
+
+#[cfg(feature = "gcp")]
+fn build_gcs_cloud_writer(ex_entry: ExGCSEntry) -> Result<CloudWriter, ExplorerError> {
+    let config = ex_entry.config;
+    let mut gcs_builder = object_store::gcp::GoogleCloudStorageBuilder::new()
+        .with_bucket_name(&config.bucket);
+
+    if let Some(credentials) = &config.credentials {
+        gcs_builder = gcs_builder.with_service_account_key(credentials);
+    }
+
+    let gcs = gcs_builder
+        .build()
+        .map_err(object_store_to_explorer_error)?;
+
+    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(gcs);
+    CloudWriter::new(object_store, ex_entry.key.into())
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_parquet_gcs(
+    data: ExDataFrame,
+    ex_entry: ExGCSEntry,
+    ex_compression: ExParquetCompression,
+) -> Result<(), ExplorerError> {
+    let mut cloud_writer = build_gcs_cloud_writer(ex_entry)?;
+
+    let compression = ParquetCompression::try_from(ex_compression)?;
+
+    ParquetWriter::new(&mut cloud_writer)
+        .with_compression(compression)
+        .finish(&mut data.clone())?;
+
+    let _ = cloud_writer.finish()?;
+
+    Ok(())
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_csv_gcs(
+    data: ExDataFrame,
+    ex_entry: ExGCSEntry,
+    include_headers: bool,
+    delimiter: u8,
+    quote_style: ExQuoteStyle,
+) -> Result<(), ExplorerError> {
+    let mut cloud_writer = build_gcs_cloud_writer(ex_entry)?;
+
+    CsvWriter::new(&mut cloud_writer)
+        .include_header(include_headers)
+        .with_separator(delimiter)
+        .with_quote_style(quote_style.into())
+        .finish(&mut data.clone())?;
+
+    let _ = cloud_writer.finish()?;
+
+    Ok(())
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_ipc_gcs(
+    data: ExDataFrame,
+    ex_entry: ExGCSEntry,
+    compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    let compression = match compression {
+        Some(algo) => Some(decode_ipc_compression(algo)?),
+        None => None,
+    };
+
+    let mut cloud_writer = build_gcs_cloud_writer(ex_entry)?;
+
+    IpcWriter::new(&mut cloud_writer)
+        .with_compression(compression)
+        .finish(&mut data.clone())?;
+
+    let _ = cloud_writer.finish()?;
+
+    Ok(())
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_ipc_stream_gcs(
+    data: ExDataFrame,
+    ex_entry: ExGCSEntry,
+    compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    let compression = match compression {
+        Some(algo) => Some(decode_ipc_compression(algo)?),
+        None => None,
+    };
+
+    let mut cloud_writer = build_gcs_cloud_writer(ex_entry)?;
+
+    IpcStreamWriter::new(&mut cloud_writer)
+        .with_compression(compression)
+        .finish(&mut data.clone())?;
+
+    let _ = cloud_writer.finish()?;
+
+    Ok(())
+}
+
+#[cfg(all(feature = "ndjson", feature = "gcp"))]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_ndjson_gcs(data: ExDataFrame, ex_entry: ExGCSEntry) -> Result<(), ExplorerError> {
+    let mut cloud_writer = build_gcs_cloud_writer(ex_entry)?;
+
+    JsonWriter::new(&mut cloud_writer)
+        .with_json_format(JsonFormat::JsonLines)
+        .finish(&mut data.clone())?;
+
+    let _ = cloud_writer.finish()?;
+
+    Ok(())
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif]
+pub fn df_to_parquet_gcs(
+    _data: ExDataFrame,
+    _ex_entry: ExGCSEntry,
+    _ex_compression: ExParquetCompression,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif]
+pub fn df_to_csv_gcs(
+    _data: ExDataFrame,
+    _ex_entry: ExGCSEntry,
+    _has_headers: bool,
+    _delimiter: u8,
+    _quote_style: ExQuoteStyle,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif]
+pub fn df_to_ipc_gcs(
+    _data: ExDataFrame,
+    _ex_entry: ExGCSEntry,
+    _compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif]
+pub fn df_to_ipc_stream_gcs(
+    _data: ExDataFrame,
+    _ex_entry: ExGCSEntry,
+    _compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(not(any(feature = "ndjson", feature = "gcp")))]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn df_to_ndjson_gcs(_data: ExDataFrame, _ex_entry: ExGCSEntry) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" and \"ndjson\" features enabled. \
         Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
 }

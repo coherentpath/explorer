@@ -894,6 +894,10 @@ defmodule Explorer.DataFrame do
     end
   end
 
+  defp normalise_entry("gs://" <> _rest = entry, config) do
+    Explorer.FSS.parse_gcs(entry, config: config)
+  end
+
   defp normalise_entry("s3://" <> _rest = entry, config) do
     Explorer.FSS.parse_s3(entry, config: config)
   end

@@ -48,7 +48,7 @@ defmodule Explorer.PolarsBackend.DataFrame do
         eol_delimiter,
         quote_delimiter
       )
-      when backend in [:s3, :http] do
+      when backend in [:s3, :http, :gcs] do
     path = Shared.build_path_for_entry(entry)
 
     with :ok <- Explorer.FSS.download(entry, path) do
@@ -179,6 +179,23 @@ defmodule Explorer.PolarsBackend.DataFrame do
   end
 
   @impl true
+  def to_csv(
+        %DataFrame{data: df},
+        {:gcs, _key, _config} = entry,
+        header?,
+        delimiter,
+        quote_style,
+        _streaming
+      ) do
+    <<delimiter::utf8>> = delimiter
+
+    case Native.df_to_csv_gcs(df, entry, header?, delimiter, quote_style) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
   def dump_csv(%DataFrame{} = df, header?, <<delimiter::utf8>>, quote_style) do
     case Native.df_dump_csv(df.data, header?, delimiter, quote_style) do
       {:ok, string} -> {:ok, string}
@@ -241,7 +258,7 @@ defmodule Explorer.PolarsBackend.DataFrame do
 
   @impl true
   def from_ndjson({backend, _path, _config} = entry, infer_schema_length, batch_size)
-      when backend in [:s3, :http] do
+      when backend in [:s3, :http, :gcs] do
     path = Shared.build_path_for_entry(entry)
 
     with :ok <- Explorer.FSS.download(entry, path) do
@@ -279,6 +296,14 @@ defmodule Explorer.PolarsBackend.DataFrame do
   end
 
   @impl true
+  def to_ndjson(%DataFrame{data: df}, {:gcs, _key, _config} = entry) do
+    case Native.df_to_ndjson_gcs(df, entry) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
   def dump_ndjson(%DataFrame{} = df) do
     case Native.df_dump_ndjson(df.data) do
       {:ok, string} -> {:ok, string}
@@ -296,8 +321,15 @@ defmodule Explorer.PolarsBackend.DataFrame do
 
   @impl true
   def from_parquet({:s3, _key, _config} = entry, max_rows, columns, _rechunk) do
-    # We first read using a lazy dataframe, then we collect.
     with {:ok, ldf} <- Native.lf_from_parquet_cloud(entry, max_rows, columns),
+         {:ok, df} <- Native.lf_compute(ldf) do
+      Shared.create_dataframe(df)
+    end
+  end
+
+  @impl true
+  def from_parquet({:gcs, _key, _config} = entry, max_rows, columns, _rechunk) do
+    with {:ok, ldf} <- Native.lf_from_parquet_gcs(entry, max_rows, columns),
          {:ok, df} <- Native.lf_compute(ldf) do
       Shared.create_dataframe(df)
     end
@@ -367,6 +399,23 @@ defmodule Explorer.PolarsBackend.DataFrame do
   end
 
   @impl true
+  def to_parquet(
+        %DataFrame{data: df},
+        {:gcs, _key, _config} = entry,
+        {compression, compression_level},
+        _streaming
+      ) do
+    case Native.df_to_parquet_gcs(
+           df,
+           entry,
+           parquet_compression(compression, compression_level)
+         ) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
   def dump_parquet(%DataFrame{data: df}, {compression, compression_level}) do
     case Native.df_dump_parquet(df, parquet_compression(compression, compression_level)) do
       {:ok, string} -> {:ok, string}
@@ -391,7 +440,7 @@ defmodule Explorer.PolarsBackend.DataFrame do
   end
 
   @impl true
-  def from_ipc({backend, _path, _config} = entry, columns) when backend in [:s3, :http] do
+  def from_ipc({backend, _path, _config} = entry, columns) when backend in [:s3, :http, :gcs] do
     path = Shared.build_path_for_entry(entry)
 
     with :ok <- Explorer.FSS.download(entry, path) do
@@ -430,6 +479,19 @@ defmodule Explorer.PolarsBackend.DataFrame do
         _streaming
       ) do
     case Native.df_to_ipc_cloud(df, entry, maybe_atom_to_string(compression)) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
+  def to_ipc(
+        %DataFrame{data: df},
+        {:gcs, _key, _config} = entry,
+        {compression, _level},
+        _streaming
+      ) do
+    case Native.df_to_ipc_gcs(df, entry, maybe_atom_to_string(compression)) do
       {:ok, _} -> :ok
       {:error, error} -> {:error, RuntimeError.exception(error)}
     end
@@ -480,7 +542,8 @@ defmodule Explorer.PolarsBackend.DataFrame do
   end
 
   @impl true
-  def from_ipc_stream({backend, _path, _config} = entry, columns) when backend in [:s3, :http] do
+  def from_ipc_stream({backend, _path, _config} = entry, columns)
+      when backend in [:s3, :http, :gcs] do
     path = Shared.build_path_for_entry(entry)
 
     with :ok <- Explorer.FSS.download(entry, path) do
@@ -514,6 +577,14 @@ defmodule Explorer.PolarsBackend.DataFrame do
   @impl true
   def to_ipc_stream(%DataFrame{data: df}, {:s3, _key, _config} = entry, {compression, _level}) do
     case Native.df_to_ipc_stream_cloud(df, entry, maybe_atom_to_string(compression)) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
+  def to_ipc_stream(%DataFrame{data: df}, {:gcs, _key, _config} = entry, {compression, _level}) do
+    case Native.df_to_ipc_stream_gcs(df, entry, maybe_atom_to_string(compression)) do
       {:ok, _} -> :ok
       {:error, error} -> {:error, RuntimeError.exception(error)}
     end

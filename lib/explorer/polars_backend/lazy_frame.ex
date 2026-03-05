@@ -102,7 +102,7 @@ defmodule Explorer.PolarsBackend.LazyFrame do
 
   @impl true
   def from_csv(
-        {:s3, _key, _config},
+        {backend, _key, _config},
         _,
         _,
         _,
@@ -116,9 +116,12 @@ defmodule Explorer.PolarsBackend.LazyFrame do
         _,
         _,
         _
-      ) do
+      )
+      when backend in [:s3, :gcs] do
     {:error,
-     ArgumentError.exception("reading CSV from AWS S3 is not supported for Lazy dataframes")}
+     ArgumentError.exception(
+       "reading CSV from cloud storage is not supported for Lazy dataframes"
+     )}
   end
 
   @impl true
@@ -204,6 +207,14 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
+  def from_parquet({:gcs, _key, _config} = entry, max_rows, columns, _rechunk) do
+    case Native.lf_from_parquet_gcs(entry, max_rows, columns) do
+      {:ok, polars_ldf} -> Shared.create_dataframe(polars_ldf)
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
   def from_parquet({:http, url, _config}, max_rows, columns, _rechunk) do
     case Native.lf_from_parquet(url, max_rows, columns) do
       {:ok, polars_ldf} -> Shared.create_dataframe(polars_ldf)
@@ -220,9 +231,11 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
-  def from_ndjson({:s3, _key, _config}, _, _) do
+  def from_ndjson({backend, _key, _config}, _, _) when backend in [:s3, :gcs] do
     {:error,
-     ArgumentError.exception("reading NDJSON from AWS S3 is not supported for Lazy dataframes")}
+     ArgumentError.exception(
+       "reading NDJSON from cloud storage is not supported for Lazy dataframes"
+     )}
   end
 
   @impl true
@@ -242,9 +255,11 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
-  def from_ipc({:s3, _key, _config}, _) do
+  def from_ipc({backend, _key, _config}, _) when backend in [:s3, :gcs] do
     {:error,
-     ArgumentError.exception("reading IPC from AWS S3 is not supported for Lazy dataframes")}
+     ArgumentError.exception(
+       "reading IPC from cloud storage is not supported for Lazy dataframes"
+     )}
   end
 
   @impl true
@@ -265,10 +280,10 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
-  def from_ipc_stream({:s3, _key, _config}, _) do
+  def from_ipc_stream({backend, _key, _config}, _) when backend in [:s3, :gcs] do
     {:error,
      ArgumentError.exception(
-       "reading IPC Stream from AWS S3 is not supported for Lazy dataframes"
+       "reading IPC Stream from cloud storage is not supported for Lazy dataframes"
      )}
   end
 
@@ -370,6 +385,20 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
+  def to_csv(
+        %DF{} = ldf,
+        {:gcs, _key, _config} = entry,
+        header?,
+        delimiter,
+        quote_style,
+        _streaming
+      ) do
+    eager_df = collect(ldf)
+
+    Eager.to_csv(eager_df, entry, header?, delimiter, quote_style, false)
+  end
+
+  @impl true
   def to_parquet(%DF{} = ldf, {:local, path, _config}, {compression, level}, streaming) do
     case Native.lf_to_parquet(
            ldf.data,
@@ -407,6 +436,30 @@ defmodule Explorer.PolarsBackend.LazyFrame do
   end
 
   @impl true
+  def to_parquet(
+        %DF{} = ldf,
+        {:gcs, _key, _config} = entry,
+        {compression, level},
+        _streaming = true
+      ) do
+    case Native.lf_to_parquet_gcs(
+           ldf.data,
+           entry,
+           Shared.parquet_compression(compression, level)
+         ) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
+  def to_parquet(%DF{} = ldf, {:gcs, _key, _config} = entry, compression, _streaming = false) do
+    eager_df = collect(ldf)
+
+    Eager.to_parquet(eager_df, entry, compression, false)
+  end
+
+  @impl true
   def to_ipc(%DF{} = ldf, {:local, path, _config}, {compression, _level}, streaming) do
     case Native.lf_to_ipc(ldf.data, path, Atom.to_string(compression), streaming) do
       {:ok, _} -> :ok
@@ -428,6 +481,25 @@ defmodule Explorer.PolarsBackend.LazyFrame do
 
   @impl true
   def to_ipc(%DF{} = ldf, {:s3, _key, _config} = entry, compression, _streaming = false) do
+    eager_df = collect(ldf)
+
+    Eager.to_ipc(eager_df, entry, compression, false)
+  end
+
+  @impl true
+  def to_ipc(%DF{} = ldf, {:gcs, _key, _config} = entry, {compression, _level}, _streaming = true) do
+    case Native.lf_to_ipc_gcs(
+           ldf.data,
+           entry,
+           Atom.to_string(compression)
+         ) do
+      {:ok, _} -> :ok
+      {:error, error} -> {:error, RuntimeError.exception(error)}
+    end
+  end
+
+  @impl true
+  def to_ipc(%DF{} = ldf, {:gcs, _key, _config} = entry, compression, _streaming = false) do
     eager_df = collect(ldf)
 
     Eager.to_ipc(eager_df, entry, compression, false)

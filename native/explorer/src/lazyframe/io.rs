@@ -4,7 +4,7 @@ use std::io::BufWriter;
 use std::num::NonZeroUsize;
 
 use crate::dataframe::io::schema_from_dtypes_pairs;
-use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExSeriesDtype};
+use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExGCSEntry, ExSeriesDtype};
 use crate::{ExLazyFrame, ExplorerError};
 
 #[rustler::nif]
@@ -369,5 +369,131 @@ pub fn lf_from_ndjson(
 ) -> Result<ExLazyFrame, ExplorerError> {
     Err(ExplorerError::Other("Explorer was compiled without the \"ndjson\" feature enabled. \
         This is mostly due to this feature being incompatible with your computer's architecture. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+// ============ GCS Cloud ============ //
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_from_parquet_gcs(
+    ex_entry: ExGCSEntry,
+    stop_after_n_rows: Option<usize>,
+    columns: Option<Vec<String>>,
+) -> Result<ExLazyFrame, ExplorerError> {
+    let options = ScanArgsParquet {
+        n_rows: stop_after_n_rows,
+        cloud_options: Some(ex_entry.config.to_cloud_options()),
+        ..Default::default()
+    };
+    let cols: Vec<Expr> = if let Some(cols) = columns {
+        cols.iter().map(col).collect()
+    } else {
+        vec![all().as_expr()]
+    };
+
+    let path = PlPath::from_string(ex_entry.to_string());
+    let lf = LazyFrame::scan_parquet(path, options)?
+        .with_comm_subplan_elim(false)
+        .with_new_streaming(true)
+        .select(cols);
+
+    Ok(ExLazyFrame::new(lf))
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_from_parquet_gcs(
+    _ex_entry: ExGCSEntry,
+    _stop_after_n_rows: Option<usize>,
+    _columns: Option<Vec<String>>,
+) -> Result<ExLazyFrame, ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_to_parquet_gcs(
+    data: ExLazyFrame,
+    ex_entry: ExGCSEntry,
+    ex_compression: ExParquetCompression,
+) -> Result<(), ExplorerError> {
+    let lf = data.clone_inner();
+    let cloud_options = Some(ex_entry.config.to_cloud_options());
+    let compression = ParquetCompression::try_from(ex_compression)?;
+
+    let options = ParquetWriteOptions {
+        compression,
+        statistics: StatisticsOptions::empty(),
+        row_group_size: None,
+        data_page_size: None,
+        ..Default::default()
+    };
+    let sink_target = SinkTarget::Path(PlPath::from_string(ex_entry.to_string()));
+
+    let sink_options = SinkOptions {
+        maintain_order: false,
+        ..Default::default()
+    };
+
+    let _ = lf
+        .with_comm_subplan_elim(false)
+        .sink_parquet(sink_target, options, cloud_options, sink_options)?
+        .collect();
+    Ok(())
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_to_parquet_gcs(
+    _data: ExLazyFrame,
+    _ex_entry: ExGCSEntry,
+    _ex_compression: ExParquetCompression,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
+        Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
+}
+
+#[cfg(feature = "gcp")]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_to_ipc_gcs(
+    data: ExLazyFrame,
+    ex_entry: ExGCSEntry,
+    compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    let lf = data.clone_inner();
+    let cloud_options = Some(ex_entry.config.to_cloud_options());
+    let compression = match compression {
+        Some("lz4") => Some(IpcCompression::LZ4),
+        Some("zstd") => Some(IpcCompression::default()),
+        _ => None,
+    };
+
+    let options = IpcWriterOptions {
+        compression,
+        ..Default::default()
+    };
+    let sink_target = SinkTarget::Path(PlPath::from_string(ex_entry.to_string()));
+    let sink_options = SinkOptions {
+        maintain_order: false,
+        ..Default::default()
+    };
+    let _ = lf
+        .with_comm_subplan_elim(false)
+        .sink_ipc(sink_target, options, cloud_options, sink_options)?
+        .collect();
+
+    Ok(())
+}
+
+#[cfg(not(feature = "gcp"))]
+#[rustler::nif(schedule = "DirtyIo")]
+pub fn lf_to_ipc_gcs(
+    _data: ExLazyFrame,
+    _ex_entry: ExGCSEntry,
+    _compression: Option<&str>,
+) -> Result<(), ExplorerError> {
+    Err(ExplorerError::Other("Explorer was compiled without the \"gcp\" feature enabled. \
         Please read the section about precompilation in our README.md: https://github.com/elixir-explorer/explorer#precompilation".to_string()))
 }

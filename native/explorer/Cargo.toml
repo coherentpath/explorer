@@ -93,9 +93,10 @@ features = ["abs", "ewma", "cum_agg", "cov", "index_of"]
 [features]
 default = ["ndjson", "cloud", "nif_version_2_15"]
 
-cloud = ["object_store", "tokio", "aws", "polars/cloud"]
+cloud = ["object_store", "tokio", "aws", "gcp", "polars/cloud"]
 ndjson = ["polars/json"]
 aws = ["object_store/aws", "polars/async", "polars/aws"]
+gcp = ["object_store/gcp", "polars/async", "polars/gcp"]
 
 # Feature necessary for Rustler Precompiled.
 nif_version_2_15 = ["rustler/nif_version_2_15"]
