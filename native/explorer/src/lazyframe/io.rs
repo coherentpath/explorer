@@ -4,7 +4,7 @@ use std::io::BufWriter;
 use std::num::NonZeroUsize;
 
 use crate::dataframe::io::schema_from_dtypes_pairs;
-use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExGCSEntry, ExSeriesDtype};
+use crate::datatypes::{ExGCSEntry, ExParquetCompression, ExQuoteStyle, ExS3Entry, ExSeriesDtype};
 use crate::{ExLazyFrame, ExplorerError};
 
 #[rustler::nif]

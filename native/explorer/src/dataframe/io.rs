@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Write};
 use std::sync::Arc;
 
-use crate::datatypes::{ExParquetCompression, ExQuoteStyle, ExS3Entry, ExGCSEntry, ExSeriesDtype};
+use crate::datatypes::{ExGCSEntry, ExParquetCompression, ExQuoteStyle, ExS3Entry, ExSeriesDtype};
 use crate::{ExDataFrame, ExplorerError};
 
 #[cfg(feature = "cloud")]
@@ -890,8 +890,8 @@ pub fn df_to_ndjson_cloud(_data: ExDataFrame, _ex_entry: ExS3Entry) -> Result<()
 #[cfg(feature = "gcp")]
 fn build_gcs_cloud_writer(ex_entry: ExGCSEntry) -> Result<CloudWriter, ExplorerError> {
     let config = ex_entry.config;
-    let mut gcs_builder = object_store::gcp::GoogleCloudStorageBuilder::new()
-        .with_bucket_name(&config.bucket);
+    let mut gcs_builder =
+        object_store::gcp::GoogleCloudStorageBuilder::new().with_bucket_name(&config.bucket);
 
     if let Some(credentials) = &config.credentials {
         gcs_builder = gcs_builder.with_service_account_key(credentials);
