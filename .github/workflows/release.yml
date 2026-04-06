@@ -2,8 +2,6 @@ name: Precomp NIFs
 
 on:
   push:
-    branches:
-      - dm/sc-186147-explorer-gcs-support
     tags:
       - "*"
   workflow_dispatch:
