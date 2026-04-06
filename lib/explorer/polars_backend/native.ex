@@ -1,8 +1,7 @@
 defmodule Explorer.PolarsBackend.Native do
   @moduledoc false
 
-  mix_config = Mix.Project.config()
-  version = mix_config[:version]
+  version = "0.12.0-gcs.1"
   github_url = "https://github.com/coherentpath/explorer"
   # Since Rustler 0.27.0, we need to change manually the mode for each env.
   # We want "debug" in dev and test because it's faster to compile.
